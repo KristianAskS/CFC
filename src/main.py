@@ -54,8 +54,10 @@ async def on_ready():
     try:
         print("Synkroniserer kommandoer...")
         # Synkroniserer kun kommandoer for testguild
-        tree.clear_commands(guild=test_guild)
-        tree.copy_global_to(guild=test_guild)
+        #tree.clear_commands(guild=test_guild)
+        #tree.copy_global_to(guild=test_guild)
+        #synced = await tree.sync(guild=test_guild)
+        ree.clear_commands(guild=test_guild)
         synced = await tree.sync(guild=test_guild)
         print(f"Synkroniserte {len(synced)} kommandoer.")
     except Exception as e:
