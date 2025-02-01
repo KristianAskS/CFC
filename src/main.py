@@ -5,6 +5,8 @@ from pymongo import MongoClient
 from dotenv import load_dotenv
 import secrets  # Brukes for å generere en kort, unik ID
 import datetime  # For å hente nåværende dato og tid
+import json
+import urllib.parse
 
 # Last inn miljøvariabler fra .env-filen
 load_dotenv()
@@ -36,11 +38,12 @@ async def on_ready():
     print(f"Logget inn som {client.user} (ID: {client.user.id})")
     test_guild = discord.Object(id=1322336457419001968)  # Bytt ut med din testguild-ID
     try:
+        print("Synkroniserer kommandoer...")
         # Synkroniserer kun kommandoer for testguild (oppdateres umiddelbart)
-        # tree.clear_commands(guild=test_guild)
-        # tree.copy_global_to(guild=test_guild)
+        tree.clear_commands(guild=test_guild)
+        tree.copy_global_to(guild=test_guild)
         synced = await tree.sync(guild=test_guild)
-        # print(f"Synkroniserte {len(synced)} kommandoer.")
+        print(f"Synkroniserte {len(synced)} kommandoer.")
     except Exception as e:
         # print(f"Feil ved synkronisering av kommandoer: {e}")
         pass
@@ -135,15 +138,13 @@ async def list_paragraphs(interaction: discord.Interaction):
     await interaction.response.send_message(embed=embed)
 
 
-# Slash-kommando for å danne en ny bot (fine)
-# Alle kan bruke denne kommandoen, men man kan ikke gi seg selv bot.
 @tree.command(name="create_fine", description="Danner en ny bot for en bruker")
 @app_commands.describe(
     paragraph_identifier="Kort ID eller tittel på paragrafen som ble brutt",
     description="Beskrivelse av boten",
     num_fines="Antall bøter som skal ilagt",
     offender="Brukeren som skal få boten",
-    image="(Valgfritt) URL til et bilde som dokumentasjon",
+    image="(Valgfritt) Opplastet bilde for dokumentasjon",
 )
 async def create_fine(
     interaction: discord.Interaction,
@@ -151,7 +152,7 @@ async def create_fine(
     description: str,
     num_fines: int,
     offender: discord.Member,
-    image: str = None,
+    image: discord.Attachment = None,  # Changed parameter type to discord.Attachment
 ):
     # Sjekk at brukeren ikke prøver å gi seg selv bot
     if offender.id == interaction.user.id:
@@ -175,6 +176,9 @@ async def create_fine(
     while fines_collection.find_one({"short_id": fine_short_id}):
         fine_short_id = secrets.token_hex(3)
 
+    # Hvis et bilde er lastet opp, bruk attachment.url for å få URL-en
+    image_url = image.url if image else None
+
     # Lag dokument for boten
     fine = {
         "short_id": fine_short_id,
@@ -184,7 +188,7 @@ async def create_fine(
         },
         "description": description,
         "num_fines": num_fines,
-        "image": image if image else None,
+        "image": image_url,  # Her lagrer vi URL-en fra opplastet bilde
         "approved": False,
         "reimbursed": False,
         "offender_id": offender.id,
@@ -200,59 +204,111 @@ async def create_fine(
     )
 
 
-# Slash-kommando for å liste alle botene for en gitt bruker
-@tree.command(name="list_fines", description="Vis alle bot for en gitt bruker")
+# Slash-kommando for å liste en kort oversikt over alle botene for en gitt bruker
+@tree.command(
+    name="list_fines", description="Vis en kort oversikt over bot for en gitt bruker"
+)
 @app_commands.describe(user="Brukeren hvis bot du ønsker å se")
 async def list_fines(interaction: discord.Interaction, user: discord.Member):
     user_fines = list(fines_collection.find({"offender_id": user.id}))
     if not user_fines:
         await interaction.response.send_message(
-            f"📜 Ingen bøter funnet for {user.mention}.", ephemeral=True
+            f"📜 Ingen bot funnet for {user.mention}.", ephemeral=True
         )
         return
 
-    embed = discord.Embed(
-        title=f"Bot for {user}",
-        description="Liste over alle registrerte bot",
-        color=discord.Color.red(),
-    )
     # Sorter botene etter dato (nyeste først)
     user_fines.sort(
         key=lambda x: x.get("date", datetime.datetime.utcnow()), reverse=True
     )
+
+    total_fines = len(user_fines)
+
+    # Opprett et overordnet embed med totalantall
+    embed = discord.Embed(
+        title=f"Bot for {user.display_name}",
+        description=f"Totalt antall bot: **{total_fines}**",
+        color=discord.Color.blue(),
+    )
+
+    # Legg til et felt for hver bot med kortfattet info
     for fine in user_fines:
-        paragraph_info = fine.get("paragraph", {})
-        para_title = paragraph_info.get("title", "Ukjent paragraf")
-        para_id = paragraph_info.get("short_id", "N/A")
-        fine_desc = fine.get("description", "")
-        num_fines = fine.get("num_fines", 0)
-        approved = fine.get("approved", False)
-        reimbursed = fine.get("reimbursed", False)
+        fine_id = fine.get("short_id", "N/A")
+        para_title = fine.get("paragraph", {}).get("title", "Ukjent paragraf")
         date_obj = fine.get("date")
         date_str = (
             date_obj.strftime("%Y-%m-%d %H:%M:%S")
             if isinstance(date_obj, datetime.datetime)
             else "N/A"
         )
-        fine_short_id = fine.get("short_id", "N/A")
+        num_fines = fine.get("num_fines", 0)
+        bilde_status = "Ja" if fine.get("image") else "Nei"
 
         field_value = (
-            f"**Beskrivelse:** {fine_desc}\n"
-            f"**Antall bøter:** {num_fines}\n"
-            f"**Godkjent:** {'Ja' if approved else 'Nei'}\n"
-            f"**Tilbakebetalt:** {'Ja' if reimbursed else 'Nei'}\n"
             f"**Dato:** {date_str}\n"
-            f"**Fine ID:** {fine_short_id}"
+            f"**Antall bøter:** {num_fines}\n"
+            f"**Bilde:** {bilde_status}"
         )
-        # Legg også ved bilde-URL om den finnes
-        if fine.get("image"):
-            field_value += f"\n**Bilde:** {fine.get('image')}"
-
         embed.add_field(
-            name=f"⚖️ {para_title} (Paragraf ID: {para_id})",
+            name=f"ID: {fine_id} | Paragraf: {para_title}",
             value=field_value,
             inline=False,
         )
+
+    await interaction.response.send_message(embed=embed)
+
+
+# Slash-kommando for å vise detaljert oversikt for en spesifikk bot
+@tree.command(
+    name="list_fine", description="Vis detaljert oversikt for en spesifikk bot"
+)
+@app_commands.describe(identifier="Den unike short ID-en til boten")
+async def list_fine(interaction: discord.Interaction, identifier: str):
+    fine = fines_collection.find_one({"short_id": identifier})
+    if not fine:
+        await interaction.response.send_message(
+            f"⚠️ Ingen bot funnet med ID **{identifier}**.", ephemeral=True
+        )
+        return
+
+    fine_id = fine.get("short_id", "N/A")
+    paragraph_info = fine.get("paragraph", {})
+    para_title = paragraph_info.get("title", "Ukjent paragraf")
+    para_id = paragraph_info.get("short_id", "N/A")
+    fine_desc = fine.get("description", "Ingen beskrivelse")
+    num_fines = fine.get("num_fines", 0)
+    approved = fine.get("approved", False)
+    reimbursed = fine.get("reimbursed", False)
+    date_obj = fine.get("date")
+    date_str = (
+        date_obj.strftime("%Y-%m-%d %H:%M:%S")
+        if isinstance(date_obj, datetime.datetime)
+        else "N/A"
+    )
+    offender_name = fine.get("offender_name", "Ukjent")
+    issuer_name = fine.get("issuer_name", "Ukjent")
+
+    # Bygg detaljert beskrivelse med all relevant informasjon
+    detailed_text = (
+        f"**Paragraf:** {para_title} (ID: {para_id})\n"
+        f"**Beskrivelse:** {fine_desc}\n"
+        f"**Antall bøter:** {num_fines}\n"
+        f"**Godkjent:** {'Ja' if approved else 'Nei'}\n"
+        f"**Tilbakebetalt:** {'Ja' if reimbursed else 'Nei'}\n"
+        f"**Dato:** {date_str}\n"
+        f"**Offender:** {offender_name}\n"
+        f"**Issuer:** {issuer_name}"
+    )
+
+    embed = discord.Embed(
+        title=f"Detaljert oversikt for bot ID: {fine_id}",
+        description=detailed_text,
+        color=discord.Color.green(),
+    )
+
+    # Hvis boten har et bilde, vis det i embedet
+    if fine.get("image"):
+        embed.set_image(url=fine.get("image"))
 
     await interaction.response.send_message(embed=embed)
 
