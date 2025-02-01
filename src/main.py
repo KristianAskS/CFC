@@ -380,7 +380,6 @@ async def update_paragraph(
         )
         return
 
-    # Bygg oppdateringsdata med de felt som har fått nye verdier
     update_fields = {}
     if title is not None:
         update_fields["title"] = title
