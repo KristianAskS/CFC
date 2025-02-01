@@ -346,5 +346,69 @@ async def remove_fine(interaction: discord.Interaction, identifier: int):
         )
 
 
+@tree.command(
+    name="update_paragraph",
+    description="Oppdater en eksisterende paragraf (bot-mester)",
+)
+@app_commands.describe(
+    identifier="Tittelen eller den korte ID-en til paragrafen",
+    title="(Valgfritt) Ny tittel",
+    description="(Valgfritt) Ny beskrivelse",
+    max_fines="(Valgfritt) Ny maks antall bøter",
+)
+async def update_paragraph(
+    interaction: discord.Interaction,
+    identifier: str,
+    title: str = None,
+    description: str = None,
+    max_fines: int = None,
+):
+    if not is_bot_master(interaction):
+        await interaction.response.send_message(
+            "🚫 Du har ikke rettigheter til å bruke denne kommandoen.", ephemeral=True
+        )
+        return
+
+    # Finn paragrafen basert på tittel eller short_id
+    paragraph = paragraphs_collection.find_one(
+        {"$or": [{"title": identifier}, {"short_id": identifier}]}
+    )
+    if not paragraph:
+        await interaction.response.send_message(
+            f"⚠️ Ingen paragraf funnet med identifikatoren **{identifier}**.",
+            ephemeral=True,
+        )
+        return
+
+    # Bygg oppdateringsdata med de felt som har fått nye verdier
+    update_fields = {}
+    if title is not None:
+        update_fields["title"] = title
+    if description is not None:
+        update_fields["description"] = description
+    if max_fines is not None:
+        update_fields["max_fines"] = max_fines
+
+    if not update_fields:
+        await interaction.response.send_message(
+            "ℹ️ Ingen nye verdier ble sendt inn for oppdatering.", ephemeral=True
+        )
+        return
+
+    # Oppdater paragrafen
+    result = paragraphs_collection.update_one(
+        {"_id": paragraph["_id"]}, {"$set": update_fields}
+    )
+    if result.modified_count == 1:
+        await interaction.response.send_message(
+            f"✅ Paragraf med identifikatoren **{identifier}** er oppdatert.",
+            ephemeral=True,
+        )
+    else:
+        await interaction.response.send_message(
+            "⚠️ Det skjedde en feil under oppdateringen.", ephemeral=True
+        )
+
+
 if __name__ == "__main__":
     client.run(TOKEN)
