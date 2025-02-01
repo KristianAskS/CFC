@@ -3,32 +3,46 @@ import discord
 from discord import app_commands
 from pymongo import MongoClient
 from dotenv import load_dotenv
-import secrets  # Brukes for å generere en kort, unik ID
-import datetime  # For å hente nåværende dato og tid
+import secrets
+import datetime
 import json
 import urllib.parse
+import re
 
-# Last inn miljøvariabler fra .env-filen
 load_dotenv()
 
 TOKEN = os.getenv("TOKEN")
 BOT_MASTER_ID = int(os.getenv("BOT_MASTER_ID"))
-MONGO_URI = os.getenv(
-    "MONGO_URI", "mongodb://mongo:27017"
-)  # Standard til docker-compose-tjenestenavn
+MONGO_URI = os.getenv("MONGO_URI", "mongodb://mongo:27017")
 
-# Koble til MongoDB
 mongo_client = MongoClient(MONGO_URI)
 db = mongo_client.lawbot
 paragraphs_collection = db.paragraphs
 fines_collection = db.fines
+
+# Hjelpefunksjon for å finne den laveste ledige heltalls-ID-en for bøter
+def get_next_fine_id():
+    fines = fines_collection.find({}, {"short_id": 1})
+    taken_ids = set()
+    for fine in fines:
+        if "short_id" in fine:
+            try:
+                taken_ids.add(int(fine["short_id"]))
+            except Exception:
+                pass
+    # Start på 1 og øk til vi finner et ledig tall
+    next_id = 1
+    while next_id in taken_ids:
+        next_id += 1
+    return next_id
+
 
 # Sett opp Discord-klient med intents
 intents = discord.Intents.default()
 client = discord.Client(intents=intents)
 tree = app_commands.CommandTree(client)
 
-# Funksjon for å sjekke om brukeren er bot-mester (eller lovverksjef)
+
 def is_bot_master(interaction: discord.Interaction) -> bool:
     return interaction.user.id == BOT_MASTER_ID
 
@@ -36,16 +50,15 @@ def is_bot_master(interaction: discord.Interaction) -> bool:
 @client.event
 async def on_ready():
     print(f"Logget inn som {client.user} (ID: {client.user.id})")
-    test_guild = discord.Object(id=1322336457419001968)  # Bytt ut med din testguild-ID
+    test_guild = discord.Object(id=1322336457419001968)
     try:
         print("Synkroniserer kommandoer...")
-        # Synkroniserer kun kommandoer for testguild (oppdateres umiddelbart)
+        # Synkroniserer kun kommandoer for testguild
         tree.clear_commands(guild=test_guild)
         tree.copy_global_to(guild=test_guild)
         synced = await tree.sync(guild=test_guild)
         print(f"Synkroniserte {len(synced)} kommandoer.")
     except Exception as e:
-        # print(f"Feil ved synkronisering av kommandoer: {e}")
         pass
 
 
@@ -65,7 +78,6 @@ async def add_paragraph(
         )
         return
 
-    # Generer en kort, unik ID for paragrafen (6 hex-tegn)
     short_id = secrets.token_hex(3)
     while paragraphs_collection.find_one({"short_id": short_id}):
         short_id = secrets.token_hex(3)
@@ -138,9 +150,10 @@ async def list_paragraphs(interaction: discord.Interaction):
     await interaction.response.send_message(embed=embed)
 
 
+# Slash-kommando for å opprette en ny bot (bøte) for en bruker
 @tree.command(name="create_fine", description="Danner en ny bot for en bruker")
 @app_commands.describe(
-    paragraph_identifier="Kort ID eller tittel på paragrafen som ble brutt",
+    paragraph_identifier="Første bokstaver på kort ID eller tittel på paragrafen som ble brutt",
     description="Beskrivelse av boten",
     num_fines="Antall bøter som skal ilagt",
     offender="Brukeren som skal få boten",
@@ -152,7 +165,7 @@ async def create_fine(
     description: str,
     num_fines: int,
     offender: discord.Member,
-    image: discord.Attachment = None,  # Changed parameter type to discord.Attachment
+    image: discord.Attachment = None,
 ):
     # Sjekk at brukeren ikke prøver å gi seg selv bot
     if offender.id == interaction.user.id:
@@ -161,34 +174,33 @@ async def create_fine(
         )
         return
 
-    # Finn paragrafen basert på short_id eller tittel
+    # Bruk regex for å søke etter paragraf basert på starten av short_id eller title (case-insensitive)
+    regex = re.compile(f"^{re.escape(paragraph_identifier)}", re.IGNORECASE)
     paragraph = paragraphs_collection.find_one(
-        {"$or": [{"short_id": paragraph_identifier}, {"title": paragraph_identifier}]}
+        {"$or": [{"short_id": regex}, {"title": regex}]}
     )
     if not paragraph:
         await interaction.response.send_message(
-            "🚫 Fant ingen paragraf med den gitte identifikatoren.", ephemeral=True
+            "🚫 Fant ingen paragraf som matcher den gitte identifikatoren.",
+            ephemeral=True,
         )
         return
 
-    # Generer en kort, unik ID for boten (6 hex-tegn)
-    fine_short_id = secrets.token_hex(3)
-    while fines_collection.find_one({"short_id": fine_short_id}):
-        fine_short_id = secrets.token_hex(3)
+    # Generer en sekvensiell ID for boten: Finn det laveste ledige heltall (starter på 1)
+    fine_id = get_next_fine_id()
 
-    # Hvis et bilde er lastet opp, bruk attachment.url for å få URL-en
     image_url = image.url if image else None
 
-    # Lag dokument for boten
+    # Lag dokument for boten (bøten)
     fine = {
-        "short_id": fine_short_id,
+        "short_id": fine_id,
         "paragraph": {
             "title": paragraph.get("title"),
             "short_id": paragraph.get("short_id"),
         },
         "description": description,
         "num_fines": num_fines,
-        "image": image_url,  # Her lagrer vi URL-en fra opplastet bilde
+        "image": image_url,
         "approved": False,
         "reimbursed": False,
         "offender_id": offender.id,
@@ -199,12 +211,12 @@ async def create_fine(
     }
     fines_collection.insert_one(fine)
     await interaction.response.send_message(
-        f"✅ Bot for {offender.mention} er registrert under paragraf **{paragraph.get('title')}** (Paragraf ID: {paragraph.get('short_id')}).\n**Fine ID:** {fine_short_id}",
-        ephemeral=True,
+        f"✅ Bot for {offender.mention} er registrert under paragraf **{paragraph.get('title')}** (Paragraf ID: {paragraph.get('short_id')}).\n**Bøte-ID:** {fine_id}",
+        ephemeral=False,
     )
 
 
-# Slash-kommando for å liste en kort oversikt over alle botene for en gitt bruker
+# Slash-kommando for å liste en kort oversikt over alle botene (bøtene) for en gitt bruker
 @tree.command(
     name="list_fines", description="Vis en kort oversikt over bot for en gitt bruker"
 )
@@ -219,7 +231,8 @@ async def list_fines(interaction: discord.Interaction, user: discord.Member):
 
     # Sorter botene etter dato (nyeste først)
     user_fines.sort(
-        key=lambda x: x.get("date", datetime.datetime.utcnow()), reverse=True
+        key=lambda x: x.get("date", datetime.datetime.now(datetime.timezone.utc)),
+        reverse=True,
     )
 
     total_fines = len(user_fines)
@@ -231,7 +244,6 @@ async def list_fines(interaction: discord.Interaction, user: discord.Member):
         color=discord.Color.blue(),
     )
 
-    # Legg til et felt for hver bot med kortfattet info
     for fine in user_fines:
         fine_id = fine.get("short_id", "N/A")
         para_title = fine.get("paragraph", {}).get("title", "Ukjent paragraf")
@@ -258,12 +270,12 @@ async def list_fines(interaction: discord.Interaction, user: discord.Member):
     await interaction.response.send_message(embed=embed)
 
 
-# Slash-kommando for å vise detaljert oversikt for en spesifikk bot
+# Slash-kommando for å vise detaljert oversikt for en spesifikk bot (bøte)
 @tree.command(
     name="list_fine", description="Vis detaljert oversikt for en spesifikk bot"
 )
-@app_commands.describe(identifier="Den unike short ID-en til boten")
-async def list_fine(interaction: discord.Interaction, identifier: str):
+@app_commands.describe(identifier="Den unike ID-en til boten (bøten)")
+async def list_fine(interaction: discord.Interaction, identifier: int):
     fine = fines_collection.find_one({"short_id": identifier})
     if not fine:
         await interaction.response.send_message(
@@ -288,7 +300,6 @@ async def list_fine(interaction: discord.Interaction, identifier: str):
     offender_name = fine.get("offender_name", "Ukjent")
     issuer_name = fine.get("issuer_name", "Ukjent")
 
-    # Bygg detaljert beskrivelse med all relevant informasjon
     detailed_text = (
         f"**Paragraf:** {para_title} (ID: {para_id})\n"
         f"**Beskrivelse:** {fine_desc}\n"
@@ -306,19 +317,18 @@ async def list_fine(interaction: discord.Interaction, identifier: str):
         color=discord.Color.green(),
     )
 
-    # Hvis boten har et bilde, vis det i embedet
     if fine.get("image"):
         embed.set_image(url=fine.get("image"))
 
     await interaction.response.send_message(embed=embed)
 
 
-# Slash-kommando for å fjerne en bot (kun for bot-mester/lovverksjef)
+# Slash-kommando for å fjerne en bot (bøte) (kun for bot-mester/lovverksjef)
 @tree.command(
     name="remove_fine", description="Fjern en bot (kun for bot-mester/lovverksjef)"
 )
-@app_commands.describe(identifier="Den unike short ID-en til boten som skal fjernes")
-async def remove_fine(interaction: discord.Interaction, identifier: str):
+@app_commands.describe(identifier="Den unike ID-en til boten (bøten) som skal fjernes")
+async def remove_fine(interaction: discord.Interaction, identifier: int):
     if not is_bot_master(interaction):
         await interaction.response.send_message(
             "🚫 Du har ikke rettigheter til å bruke denne kommandoen.", ephemeral=True
@@ -328,11 +338,11 @@ async def remove_fine(interaction: discord.Interaction, identifier: str):
     result = fines_collection.delete_one({"short_id": identifier})
     if result.deleted_count == 0:
         await interaction.response.send_message(
-            f"⚠️ Fant ingen bot med identifikatoren **{identifier}**.", ephemeral=True
+            f"⚠️ Fant ingen bot med ID **{identifier}**.", ephemeral=True
         )
     else:
         await interaction.response.send_message(
-            f"✅ Bot med identifikatoren **{identifier}** er fjernet.", ephemeral=True
+            f"✅ Bot med ID **{identifier}** er fjernet.", ephemeral=True
         )
 
 
