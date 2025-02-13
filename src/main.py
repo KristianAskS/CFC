@@ -54,10 +54,10 @@ async def on_ready():
     try:
         print("Synkroniserer kommandoer...")
         # Synkroniserer kun kommandoer for testguild
-        #tree.clear_commands(guild=test_guild)
-        #tree.copy_global_to(guild=test_guild)
-        #synced = await tree.sync(guild=test_guild)
-        ree.clear_commands(guild=test_guild)
+        # tree.clear_commands(guild=test_guild)
+        # tree.copy_global_to(guild=test_guild)
+        # synced = await tree.sync(guild=test_guild)
+        tree.clear_commands(guild=test_guild)
         synced = await tree.sync(guild=test_guild)
         print(f"Synkroniserte {len(synced)} kommandoer.")
     except Exception as e:
@@ -217,6 +217,30 @@ async def create_fine(
         ephemeral=False,
     )
 
+    date_str = fine.get("date").strftime("%Y-%m-%d %H:%M:%S")
+
+    detailed_text = (
+        f"**Paragraf:** {fine.get('paragraph').get('title')} (ID: {fine.get('paragraph').get('short_id')})\n"
+        f"**Beskrivelse:** {fine.get('description')}\n"
+        f"**Antall bøter:** {fine.get('num_fines')}\n"
+        f"**Godkjent:** {'Ja' if fine.get('approved') else 'Nei'}\n"
+        f"**Tilbakebetalt:** {'Ja' if fine.get('reimbursed') else 'Nei'}\n"
+        f"**Dato:** {date_str}\n"
+        f"**Offender:** {offender.mention}\n"
+        f"**Issuer:** {interaction.user.mention}"
+    )
+
+    embed = discord.Embed(
+        title="Botinformasjon",
+        description=detailed_text,
+        color=discord.Color.green(),
+    )
+
+    if fine.get("image"):
+        embed.set_image(url=fine.get("image"))
+
+    await interaction.response.send_message(embed=embed)
+
 
 # Slash-kommando for å liste en kort oversikt over alle botene (bøtene) for en gitt bruker
 @tree.command(
@@ -237,7 +261,8 @@ async def list_fines(interaction: discord.Interaction, user: discord.Member):
         reverse=True,
     )
 
-    total_fines = len(user_fines)
+    # total_fines = len(user_fines)
+    total_fines = sum([f.get("num_fines", 0) for f in user_fines])
 
     # Opprett et overordnet embed med totalantall
     embed = discord.Embed(
@@ -344,7 +369,7 @@ async def remove_fine(interaction: discord.Interaction, identifier: int):
         )
     else:
         await interaction.response.send_message(
-            f"✅ Bot med ID **{identifier}** er fjernet.", ephemeral=True
+            f"✅ Bot med ID **{identifier}** er fjernet.", ephemeral=False
         )
 
 
